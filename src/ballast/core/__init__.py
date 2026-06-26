@@ -34,6 +34,13 @@ from ballast.core.models import (
     quantize_money,
 )
 from ballast.core.strategy import Strategy
+from ballast.core.vr import (
+    TargetMode,
+    VRStrategy,
+    next_value,
+    order_from_decision,
+    rebalance_decision,
+)
 
 __all__ = [
     "DEFAULT_ROUND_DIGITS",
@@ -54,9 +61,14 @@ __all__ = [
     "StrategiesConfig",
     "Strategy",
     "StrategyConfig",
+    "TargetMode",
     "UnknownTickerError",
     "UnresolvedParameterError",
+    "VRStrategy",
     "is_index_underlying",
+    "next_value",
+    "order_from_decision",
     "quantize_money",
+    "rebalance_decision",
     "validate_instrument",
 ]

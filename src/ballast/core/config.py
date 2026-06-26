@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import BaseModel, BeforeValidator, ConfigDict
@@ -69,7 +69,13 @@ class InstrumentConfig(BaseModel):
 
 
 class StrategyConfig(BaseModel):
-    """Per-strategy config; may override target_pct/band and carries account_seq."""
+    """Per-strategy config; may override target_pct/band and carries account_seq.
+
+    The VR knobs (``g``/``flow``/``use_skill``/``target_mode``/``r`` and the
+    optional asymmetric ``min_band``/``max_band``) are OPTIONAL with VR-sensible
+    defaults (SPEC-VR-001 [T2]/[T3]/[T4]); CORE-001 configs that omit them are
+    unaffected. ``min_band``/``max_band``, when unset, fall back to the symmetric
+    band resolved through the instrument registry chain ([T1])."""
 
     model_config = _FrozenForbid
 
@@ -77,6 +83,14 @@ class StrategyConfig(BaseModel):
     ticker: str
     target_pct: Money | None = None
     band: Money | None = None
+    # VR-specific knobs (SPEC-VR-001); optional so CORE-001 configs still load.
+    g: int = 10
+    flow: Money = Decimal("0")
+    use_skill: bool = True
+    target_mode: Literal["center", "edge"] = "center"
+    r: Money = Decimal("0")
+    min_band: Money | None = None
+    max_band: Money | None = None
 
 
 class StrategiesConfig(BaseModel):
