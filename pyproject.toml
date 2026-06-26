@@ -12,6 +12,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The backtest layer (src/ballast/backtest) MAY use pandas/numpy; the pure core
+# (src/ballast/core) MUST NOT. Kept as an extra so the core stays lightweight.
+backtest = [
+    "pandas>=2",
+    "numpy>=1.26",
+]
 dev = [
     "pytest>=8",
     "pytest-cov",
@@ -19,6 +25,9 @@ dev = [
     "ruff",
     "mypy",
     "types-PyYAML",
+    "pandas>=2",
+    "pandas-stubs",
+    "numpy>=1.26",
 ]
 
 [build-system]
@@ -62,6 +71,13 @@ warn_redundant_casts = true
 warn_unused_ignores = true
 disallow_untyped_defs = true
 no_implicit_reexport = false
+
+# Scoped escape hatch for the backtest layer's third-party numerics ONLY.
+# pandas-stubs is installed for typing, but numpy's runtime types and a few
+# pandas surfaces can trip --strict; this NEVER relaxes strict on ballast.* code.
+[[tool.mypy.overrides]]
+module = ["pandas.*", "numpy.*"]
+ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
