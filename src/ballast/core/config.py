@@ -91,6 +91,13 @@ class StrategyConfig(BaseModel):
     r: Money = Decimal("0")
     min_band: Money | None = None
     max_band: Money | None = None
+    # MAB-specific knobs (SPEC-MAB-001); optional so CORE-001 / VR configs load.
+    seed: Money = Decimal("0")
+    n_splits: int = 40
+    alpha: Money = Decimal("0.10")
+    split_ratio: Money = Decimal("0.5")
+    halftime_rule: Literal["standard"] = "standard"
+    version: Literal["v1.0", "v1.1", "v2.0", "v2.1", "v2.2"] = "v2.2"
 
 
 class StrategiesConfig(BaseModel):

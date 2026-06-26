@@ -21,6 +21,13 @@ from ballast.core.instrument import (
     is_index_underlying,
     validate_instrument,
 )
+from ballast.core.mab import (
+    HalftimeRule,
+    MABStrategy,
+    MABVersion,
+    mab_daily_orders,
+    mab_on_seed_exhausted,
+)
 from ballast.core.models import (
     DEFAULT_ROUND_DIGITS,
     Decision,
@@ -50,9 +57,12 @@ __all__ = [
     "Decision",
     "DecisionSide",
     "ExecutionConfig",
+    "HalftimeRule",
     "InstrumentConfig",
     "InstrumentMeta",
     "InstrumentRegistry",
+    "MABStrategy",
+    "MABVersion",
     "Market",
     "Order",
     "OrderType",
@@ -66,6 +76,8 @@ __all__ = [
     "UnresolvedParameterError",
     "VRStrategy",
     "is_index_underlying",
+    "mab_daily_orders",
+    "mab_on_seed_exhausted",
     "next_value",
     "order_from_decision",
     "quantize_money",
