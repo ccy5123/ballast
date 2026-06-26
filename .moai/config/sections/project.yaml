@@ -1,7 +1,7 @@
 project:
   name: ballast
-  description: ''
-  type: ''
+  description: '레버리지 ETF 전략 봇 — VR(밸류 리밸런싱) + MAB(무한매수법). 종목·레버리지 배수를 1급 파라미터로 다루는 백테스트/라이브 실행 엔진.'
+  type: 'cli'
   created_at: '2026-06-26T00:53:17.039627Z'
   initialized: 'true'
 github:
