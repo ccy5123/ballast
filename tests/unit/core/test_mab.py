@@ -22,6 +22,7 @@ from ballast.core import (
     Market,
     Order,
     OrderType,
+    PlanResult,
     Side,
     State,
     Strategy,
@@ -190,11 +191,13 @@ def test_seed_remaining_negative_emits_no_buys() -> None:
 
 # --------------------------------------------------------------------------- #
 # Scenario 6 — Seed exhausted => quarter-sell = floor(holdings / 4), LOC
-# (REQ-MAB-001-R4)
+# (REQ-MAB-001-R4); SPEC-STRATEGY-001 R1: now carries a deterministic injected
+# (close) limit price (AC-2), never None.
 # --------------------------------------------------------------------------- #
 def test_seed_exhausted_quarter_sell() -> None:
     order = mab_on_seed_exhausted(
         Decimal("40.00"),
+        Decimal("12.34"),  # injected reference (close) price
         version="v2.2",
         ticker="SOXL",
         account_seq="0002",
@@ -204,15 +207,36 @@ def test_seed_exhausted_quarter_sell() -> None:
     assert order.qty == Decimal("10.00")  # floor(40 / 4)
     assert order.ticker == "SOXL"
     assert order.account_seq == "0002"
+    # SPEC-STRATEGY-001 fix (R1, FD1): the quarter-sell is a PRICED LOC at the
+    # injected reference, quantized to 2 dp — not the prior None-priced LOC.
+    assert order.limit_price == Decimal("12.34")
+    assert order.limit_price is not None
+    assert isinstance(order.limit_price, Decimal)
 
 
 def test_seed_exhausted_quarter_sell_floors_toward_zero() -> None:
     order = mab_on_seed_exhausted(
         Decimal("41.00"),
+        Decimal("12.34"),
         ticker="SOXL",
         account_seq="0002",
     )
     assert order.qty == Decimal("10.00")  # floor(41 / 4) = floor(10.25)
+    assert order.limit_price == Decimal("12.34")
+
+
+def test_seed_exhausted_quarter_sell_quantizes_ref_price() -> None:
+    # AC-2 / AC-15: a ref_price with >2 dp is normalized via quantize_money;
+    # the surviving limit_price is a 2-place Decimal.
+    order = mab_on_seed_exhausted(
+        Decimal("40.00"),
+        Decimal("12.345"),  # 3 dp -> ROUND_HALF_UP -> 12.35
+        ticker="SOXL",
+        account_seq="0002",
+    )
+    assert order.limit_price == Decimal("12.35")
+    assert order.limit_price is not None
+    assert order.limit_price.as_tuple().exponent == -2
 
 
 # --------------------------------------------------------------------------- #
@@ -334,13 +358,16 @@ def test_mabstrategy_plan_orders_daily_path(example_config_path: Path) -> None:
             "round_idx": Decimal("5"),
         },
     )
-    orders = MABStrategy().plan_orders(_mab_market(), state, cfg)
+    result = MABStrategy().plan_orders(_mab_market(), state, cfg)
+    orders = list(result.orders)
     # seed defaults to 0 -> budget 0 -> no buys; holdings>0 -> one profit-take.
     # target_pct resolved via registry: explicit mab override 0.45 -> 50*1.45.
     assert all(o.order_type is OrderType.LOC for o in orders)
     sells = _sells(orders)
     assert len(sells) == 1
     assert sells[0].limit_price == Decimal("72.50")  # 50 * 1.45 (explicit)
+    # AC-10: MAB conforms with an EMPTY state delta (no evolving internal state).
+    assert dict(result.state_delta) == {}
 
 
 def test_mabstrategy_plan_orders_seed_exhausted_path(
@@ -357,11 +384,16 @@ def test_mabstrategy_plan_orders_seed_exhausted_path(
             "round_idx": Decimal("41"),
         },
     )
-    orders = MABStrategy().plan_orders(_mab_market(), state, cfg)
+    result = MABStrategy().plan_orders(_mab_market(), state, cfg)
+    orders = result.orders
     assert len(orders) == 1
     assert orders[0].side is Side.SELL
     assert orders[0].order_type is OrderType.LOC
     assert orders[0].qty == Decimal("10.00")  # floor(40 / 4)
+    # AC-3 (R1): the quarter-sell is priced at the injected market.current_price.
+    assert orders[0].limit_price == Decimal("50.00")  # _mab_market() close
+    # AC-10: MAB still conforms with an empty delta on the seed-exhausted path.
+    assert dict(result.state_delta) == {}
 
 
 def test_mabstrategy_plan_orders_is_pure(example_config_path: Path) -> None:
@@ -376,6 +408,75 @@ def test_mabstrategy_plan_orders_is_pure(example_config_path: Path) -> None:
     MABStrategy().plan_orders(_mab_market(), state, cfg)
     # plan_orders does not mutate its inputs.
     assert state.data == data
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-STRATEGY-001 — MABStrategy conformance (AC-3, AC-10, AC-16)
+# --------------------------------------------------------------------------- #
+def test_mabstrategy_returns_plan_result(example_config_path: Path) -> None:
+    cfg = Config.load(example_config_path)
+    state = State(
+        ns="mab",
+        data={
+            "avg_price": Decimal("50.00"),
+            "holdings": Decimal("30.00"),
+            "seed_remaining": Decimal("8000.00"),
+            "round_idx": Decimal("5"),
+        },
+    )
+    result = MABStrategy().plan_orders(_mab_market(), state, cfg)
+    assert isinstance(result, PlanResult)
+
+
+def test_mabstrategy_passes_market_price_into_quarter_sell(
+    example_config_path: Path,
+) -> None:
+    # AC-3: on the seed-exhausted path MABStrategy prices the quarter-sell at the
+    # injected market.current_price (here 12.34), and surfaces an empty delta.
+    cfg = Config.load(example_config_path)
+    market = Market(
+        ticker="SOXL",
+        current_price=Decimal("12.34"),
+        fx_rate=Decimal("1300.00"),
+        is_open=True,
+        is_holiday=False,
+    )
+    state = State(
+        ns="mab",
+        data={
+            "avg_price": Decimal("50.00"),
+            "holdings": Decimal("17.00"),
+            "seed_remaining": Decimal("0.00"),
+            "round_idx": Decimal("41"),  # > n_splits (40) -> quarter-sell
+        },
+    )
+    snapshot = dict(state.data)
+    result = MABStrategy().plan_orders(market, state, cfg)
+    assert len(result.orders) == 1
+    order = result.orders[0]
+    assert order.side is Side.SELL
+    assert order.order_type is OrderType.LOC
+    assert order.qty == Decimal("4.00")  # floor(17 / 4)
+    assert order.limit_price == Decimal("12.34")  # injected close, not None
+    assert dict(result.state_delta) == {}
+    # AC-16: plan_orders mutated neither the state nor (implicitly) the cfg.
+    assert state.data == snapshot
+
+
+def test_mabstrategy_empty_delta_on_daily_path(example_config_path: Path) -> None:
+    # AC-10: the daily (non-exhausted) path also conforms with an empty delta.
+    cfg = Config.load(example_config_path)
+    state = State(
+        ns="mab",
+        data={
+            "avg_price": Decimal("50.00"),
+            "holdings": Decimal("30.00"),
+            "seed_remaining": Decimal("8000.00"),
+            "round_idx": Decimal("5"),
+        },
+    )
+    result = MABStrategy().plan_orders(_mab_market(), state, cfg)
+    assert dict(result.state_delta) == {}
 
 
 # --------------------------------------------------------------------------- #
@@ -546,11 +647,16 @@ def test_property_second_half_emits_at_most_leg_a(
         assert buy.limit_price == expected_a_price
 
 
-@given(_HOLDINGS)
+@given(_HOLDINGS, _PRICE)
 def test_property_quarter_sell_is_floor_holdings_over_four(
     holdings: Decimal,
+    ref_price: Decimal,
 ) -> None:
-    order = mab_on_seed_exhausted(holdings, ticker="SOXL", account_seq="0002")
+    order = mab_on_seed_exhausted(holdings, ref_price, ticker="SOXL", account_seq="0002")
     assert order.qty == _floor1(holdings / Decimal(4))
     assert order.order_type is OrderType.LOC
     assert order.side is Side.SELL
+    # SPEC-STRATEGY-001 (R1): always a priced LOC at the quantized reference.
+    assert order.limit_price is not None
+    assert order.limit_price == ref_price.quantize(TWO_PLACES)
+    assert _is_two_place_decimal(order.limit_price)

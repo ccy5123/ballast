@@ -40,7 +40,7 @@ from ballast.core.models import (
     State,
     quantize_money,
 )
-from ballast.core.strategy import Strategy
+from ballast.core.strategy import PlanResult, Strategy
 from ballast.core.vr import (
     TargetMode,
     VRStrategy,
@@ -66,6 +66,7 @@ __all__ = [
     "Market",
     "Order",
     "OrderType",
+    "PlanResult",
     "Side",
     "State",
     "StrategiesConfig",

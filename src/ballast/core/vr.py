@@ -38,6 +38,7 @@ from ballast.core.models import (
     State,
     quantize_money,
 )
+from ballast.core.strategy import PlanResult
 
 # Magnitude of the target_amount: rebalance back to the line (``center``) or to
 # the nearest band edge (``edge``). SPEC-VR-001 [T4]; default ``center``.
@@ -213,8 +214,15 @@ class VRStrategy:
     cadence: Literal["daily", "cycle"] = "cycle"
     ns: str = "vr"
 
-    def plan_orders(self, market: Market, state: State, cfg: Config) -> list[Order]:
-        """Wire the VR pipeline for one snapshot; ``[]`` on HOLD or a None order."""
+    def plan_orders(self, market: Market, state: State, cfg: Config) -> PlanResult:
+        """Wire the VR pipeline for one snapshot.
+
+        Returns the order(s) it plans (``()`` on HOLD or a None order) plus the
+        recomputed value line surfaced as ``{"V_n": V2}`` — the SAME ``V2`` used
+        to make this cycle's rebalance decision (single-pass; no second
+        ``next_value`` evaluation), so the engine can advance ``V_n`` across
+        cycles (REQ-STRATEGY-001-R3).
+        """
         vr = cfg.strategies.vr
 
         v1 = state.data.get(_STATE_VALUE_LINE, _ZERO)
@@ -251,4 +259,8 @@ class VRStrategy:
             ticker=vr.ticker,
             account_seq=vr.account_seq,
         )
-        return [order] if order is not None else []
+        orders: tuple[Order, ...] = (order,) if order is not None else ()
+        # Surface the recomputed value line for the engine to carry forward. ``v``
+        # is the exact ``V2`` used for the decision above (already 2-place
+        # quantized by ``next_value``); no second evaluation can diverge (FD4).
+        return PlanResult(orders=orders, state_delta={_STATE_VALUE_LINE: v})

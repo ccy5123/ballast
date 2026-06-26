@@ -13,6 +13,7 @@ from ballast.backtest.engine import run_backtest
 from ballast.backtest.metrics import compute_metrics
 from ballast.backtest.types import BacktestResult, EquityPoint
 from ballast.core.models import Order, OrderType, Side, State
+from ballast.core.strategy import PlanResult
 
 from .conftest import NoopStrategy, OneShotBuyStrategy, bar
 
@@ -157,30 +158,34 @@ class FrequentSellStrategy:
         self._ticker = ticker
         self._calls = 0
 
-    def plan_orders(self, market: object, state: object, cfg: object) -> list[Order]:
+    def plan_orders(self, market: object, state: object, cfg: object) -> PlanResult:
         self._calls += 1
         if self._calls == 1:
-            return [
+            return PlanResult(
+                orders=(
+                    Order(
+                        side=Side.BUY,
+                        ticker=self._ticker,
+                        qty=Decimal("100.00"),
+                        limit_price=Decimal("100.00"),
+                        order_type=OrderType.LOC,
+                        account_seq="0001",
+                    ),
+                )
+            )
+        # Sell 1 share at a high LOC limit that the close always clears.
+        return PlanResult(
+            orders=(
                 Order(
-                    side=Side.BUY,
+                    side=Side.SELL,
                     ticker=self._ticker,
-                    qty=Decimal("100.00"),
-                    limit_price=Decimal("100.00"),
+                    qty=Decimal("1.00"),
+                    limit_price=Decimal("1.00"),
                     order_type=OrderType.LOC,
                     account_seq="0001",
-                )
-            ]
-        # Sell 1 share at a high LOC limit that the close always clears.
-        return [
-            Order(
-                side=Side.SELL,
-                ticker=self._ticker,
-                qty=Decimal("1.00"),
-                limit_price=Decimal("1.00"),
-                order_type=OrderType.LOC,
-                account_seq="0001",
+                ),
             )
-        ]
+        )
 
 
 def test_tax_drag_positive_for_profitable_frequent_sells() -> None:

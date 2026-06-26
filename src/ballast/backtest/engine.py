@@ -26,7 +26,7 @@ boundary); the inner loop only ever sees the typed sequence.
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Hashable, Sequence
+from collections.abc import Hashable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date
 from decimal import Decimal
@@ -101,9 +101,13 @@ def run_backtest(
                 is_holiday=False,
             )
             state = _build_state(strategy.ns, ledger)
-            orders = strategy.plan_orders(market, state, cfg)
-            for order in orders:
+            result = strategy.plan_orders(market, state, cfg)
+            for order in result.orders:
                 _execute(order, bar, costs, ledger, fills, trades, year_gains)
+            # REQ-STRATEGY-001-R4: carry the strategy's recomputed state into the
+            # next cycle by applying its namespace-scoped Decimal delta. VR's
+            # {"V_n": V2} advances ``ledger.v_n``; MAB's empty delta is a no-op.
+            _apply_state_delta(ledger, result.state_delta)
         # Track the latest FX seen in each calendar year (for the deduction).
         year_fx[bar.date.year] = bar.fx_usdkrw
         curve.append(_mark_to_market(bar, ledger))
@@ -151,6 +155,20 @@ def _build_state(ns: str, ledger: _Ledger) -> State:
             "qty": ledger.holdings,
         }
     return State(ns=ns, data=data)
+
+
+def _apply_state_delta(ledger: _Ledger, delta: Mapping[str, Decimal]) -> None:
+    """Apply a strategy's namespace-scoped state delta to the ledger (R4).
+
+    Generic and opaque: the engine knows which ledger fields a delta key maps to
+    but never calls into strategy internals (no ``vr.next_value`` here, A8). VR's
+    ``{"V_n": V2}`` advances ``ledger.v_n`` (quantized to 2 dp); MAB's empty delta
+    is a no-op, leaving its fill-derived bookkeeping untouched (FD5). Unknown keys
+    are ignored so a future stateful strategy is forward-compatible.
+    """
+    v_n = delta.get("V_n")
+    if v_n is not None:
+        ledger.v_n = quantize_money(v_n)
 
 
 def _execute(

@@ -17,6 +17,7 @@ from ballast.backtest.engine import run_backtest
 from ballast.backtest.types import OHLCBar
 from ballast.core.config import Config
 from ballast.core.models import Order, OrderType, Side, State
+from ballast.core.strategy import PlanResult
 
 from .conftest import CountingStrategy, NoopStrategy, bar
 
@@ -70,31 +71,35 @@ class BuyThenSellAllStrategy:
     def __init__(self) -> None:
         self._calls = 0
 
-    def plan_orders(self, market: object, state: object, cfg: object) -> list[Order]:
+    def plan_orders(self, market: object, state: object, cfg: object) -> PlanResult:
         self._calls += 1
         if self._calls == 1:
-            return [
-                Order(
-                    side=Side.BUY,
-                    ticker="TQQQ",
-                    qty=Decimal("10.00"),
-                    limit_price=Decimal("100.00"),
-                    order_type=OrderType.LOC,
-                    account_seq="0001",
+            return PlanResult(
+                orders=(
+                    Order(
+                        side=Side.BUY,
+                        ticker="TQQQ",
+                        qty=Decimal("10.00"),
+                        limit_price=Decimal("100.00"),
+                        order_type=OrderType.LOC,
+                        account_seq="0001",
+                    ),
                 )
-            ]
+            )
         if self._calls == 2:
-            return [
-                Order(
-                    side=Side.SELL,
-                    ticker="TQQQ",
-                    qty=Decimal("10.00"),
-                    limit_price=Decimal("1.00"),  # low limit → always fills
-                    order_type=OrderType.LOC,
-                    account_seq="0001",
+            return PlanResult(
+                orders=(
+                    Order(
+                        side=Side.SELL,
+                        ticker="TQQQ",
+                        qty=Decimal("10.00"),
+                        limit_price=Decimal("1.00"),  # low limit → always fills
+                        order_type=OrderType.LOC,
+                        account_seq="0001",
+                    ),
                 )
-            ]
-        return []
+            )
+        return PlanResult()
 
 
 def test_full_position_sell_resets_avg_price_and_realizes_gain() -> None:

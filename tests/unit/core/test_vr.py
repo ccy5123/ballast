@@ -24,6 +24,7 @@ from ballast.core import (
     DecisionSide,
     Market,
     OrderType,
+    PlanResult,
     Side,
     State,
     Strategy,
@@ -380,7 +381,8 @@ def test_vrstrategy_plan_orders_sells_when_e_above_band(
             "qty": Decimal("12.00"),
         },
     )
-    orders = VRStrategy().plan_orders(market, state, cfg)
+    result = VRStrategy().plan_orders(market, state, cfg)
+    orders = result.orders
     # The advanced line stays near 1020 (skill correction only); E (1200) is
     # above V*(1.15), so a SELL order is produced.
     assert len(orders) == 1
@@ -410,8 +412,8 @@ def test_vrstrategy_plan_orders_holds_returns_empty(
             "qty": Decimal("100.00"),
         },
     )
-    orders = VRStrategy().plan_orders(market, state, cfg)
-    assert orders == []
+    result = VRStrategy().plan_orders(market, state, cfg)
+    assert result.orders == ()
 
 
 def test_vrstrategy_plan_orders_is_pure(example_config_path: Path) -> None:
@@ -437,6 +439,124 @@ def test_vrstrategy_plan_orders_is_pure(example_config_path: Path) -> None:
         "pool": Decimal("100000.00"),
         "qty": Decimal("100.00"),
     }
+
+
+# --------------------------------------------------------------------------- #
+# SPEC-STRATEGY-001 R3 — VRStrategy surfaces the recomputed V_n through the
+# enriched contract; single-cycle orders are unchanged (AC-8, AC-9).
+# --------------------------------------------------------------------------- #
+def _vr_seed_state() -> State:
+    return State(
+        ns="vr",
+        data={
+            "V_n": Decimal("1000.00"),
+            "pool": Decimal("0.00"),
+            "qty": Decimal("12.00"),
+        },
+    )
+
+
+def _vr_market() -> Market:
+    return Market(
+        ticker="TQQQ",
+        current_price=Decimal("100.00"),
+        fx_rate=Decimal("1300.00"),
+        is_open=True,
+        is_holiday=False,
+    )
+
+
+def test_vrstrategy_plan_orders_returns_plan_result(example_config_path: Path) -> None:
+    cfg = Config.load(example_config_path)
+    result = VRStrategy().plan_orders(_vr_market(), _vr_seed_state(), cfg)
+    assert isinstance(result, PlanResult)
+
+
+def test_vrstrategy_surfaces_recomputed_v_n_single_pass(example_config_path: Path) -> None:
+    # AC-8: the delta is {"V_n": V2} where V2 == next_value(...) for THIS cycle —
+    # the SAME value used to compute the rebalance decision (single-pass).
+    cfg = Config.load(example_config_path)
+    market = _vr_market()
+    state = _vr_seed_state()
+
+    result = VRStrategy().plan_orders(market, state, cfg)
+
+    # Recompute V2 independently from the same inputs the strategy used.
+    vr = cfg.strategies.vr
+    e = state.data["qty"] * market.current_price
+    expected_v2 = next_value(
+        state.data["V_n"],
+        state.data["pool"],
+        e,
+        vr.g,
+        vr.flow,
+        use_skill=vr.use_skill,
+        r=vr.r,
+    )
+    assert set(result.state_delta) == {"V_n"}
+    v2 = result.state_delta["V_n"]
+    assert v2 == expected_v2
+    assert isinstance(v2, Decimal)
+    assert _is_two_place_decimal(v2)
+    # It advanced past the seed (this is the value the engine will carry forward).
+    assert v2 != Decimal("1000.00")
+
+
+def test_vrstrategy_single_cycle_orders_unchanged_by_v_n_channel(
+    example_config_path: Path,
+) -> None:
+    # AC-9: surfacing V_n does not alter the order(s) VR plans for one cycle. The
+    # order tuple is identical to the order built directly from the same pipeline.
+    cfg = Config.load(example_config_path)
+    market = _vr_market()
+    state = _vr_seed_state()
+
+    result = VRStrategy().plan_orders(market, state, cfg)
+
+    # Rebuild the expected order through the unchanged pipeline pieces.
+    vr = cfg.strategies.vr
+    e = state.data["qty"] * market.current_price
+    v = next_value(
+        state.data["V_n"], state.data["pool"], e, vr.g, vr.flow, use_skill=vr.use_skill, r=vr.r
+    )
+    from ballast.core.instrument import InstrumentRegistry
+    from ballast.core.vr import order_from_decision, rebalance_decision
+
+    base_band = InstrumentRegistry.from_config(cfg).resolve_band(vr.ticker, vr.band)
+    min_band = vr.min_band if vr.min_band is not None else base_band
+    max_band = vr.max_band if vr.max_band is not None else base_band
+    decision = rebalance_decision(e, v, min_band, max_band, vr.target_mode)
+    expected = order_from_decision(
+        decision,
+        market.current_price,
+        state.data["qty"],
+        state.data["pool"],
+        allow_fractional=cfg.common.allow_fractional,
+        ticker=vr.ticker,
+        account_seq=vr.account_seq,
+    )
+    expected_orders = (expected,) if expected is not None else ()
+    assert result.orders == expected_orders
+
+
+def test_vrstrategy_hold_still_surfaces_v_n(example_config_path: Path) -> None:
+    # Even when no order is planned (HOLD), the V_n channel still advances.
+    cfg = Config.load(example_config_path)
+    market = Market(
+        ticker="TQQQ",
+        current_price=Decimal("10.00"),
+        fx_rate=Decimal("1300.00"),
+        is_open=True,
+        is_holiday=False,
+    )
+    state = State(
+        ns="vr",
+        data={"V_n": Decimal("1000.00"), "pool": Decimal("0.00"), "qty": Decimal("100.00")},
+    )
+    result = VRStrategy().plan_orders(market, state, cfg)
+    assert result.orders == ()
+    assert "V_n" in result.state_delta
+    assert isinstance(result.state_delta["V_n"], Decimal)
 
 
 # --------------------------------------------------------------------------- #

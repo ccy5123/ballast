@@ -12,6 +12,7 @@ from typing import Literal
 from ballast.backtest.types import OHLCBar
 from ballast.core.config import Config
 from ballast.core.models import Market, Order, OrderType, Side, State
+from ballast.core.strategy import PlanResult
 
 _TICKER = "TQQQ"
 _ACCT = "0001"
@@ -46,8 +47,8 @@ class NoopStrategy:
         self.cadence: Literal["daily", "cycle"] = cadence
         self.ns = ns
 
-    def plan_orders(self, market: Market, state: State, cfg: Config) -> list[Order]:
-        return []
+    def plan_orders(self, market: Market, state: State, cfg: Config) -> PlanResult:
+        return PlanResult()
 
 
 class OneShotBuyStrategy:
@@ -69,20 +70,22 @@ class OneShotBuyStrategy:
         self._ticker = ticker
         self.calls = 0
 
-    def plan_orders(self, market: Market, state: State, cfg: Config) -> list[Order]:
+    def plan_orders(self, market: Market, state: State, cfg: Config) -> PlanResult:
         self.calls += 1
         if self.calls > 1:
-            return []
-        return [
-            Order(
-                side=Side.BUY,
-                ticker=self._ticker,
-                qty=self._qty,
-                limit_price=self._limit,
-                order_type=OrderType.LOC,
-                account_seq=_ACCT,
+            return PlanResult()
+        return PlanResult(
+            orders=(
+                Order(
+                    side=Side.BUY,
+                    ticker=self._ticker,
+                    qty=self._qty,
+                    limit_price=self._limit,
+                    order_type=OrderType.LOC,
+                    account_seq=_ACCT,
+                ),
             )
-        ]
+        )
 
 
 class CountingStrategy:
@@ -98,7 +101,7 @@ class CountingStrategy:
         self.calls = 0
         self.seen_state_keys: list[frozenset[str]] = []
 
-    def plan_orders(self, market: Market, state: State, cfg: Config) -> list[Order]:
+    def plan_orders(self, market: Market, state: State, cfg: Config) -> PlanResult:
         self.calls += 1
         self.seen_state_keys.append(frozenset(state.data))
-        return []
+        return PlanResult()

@@ -30,7 +30,8 @@ from typing import Literal
 
 from ballast.core.config import Config
 from ballast.core.instrument import InstrumentRegistry
-from ballast.core.models import Market, Order, OrderType, Side, State
+from ballast.core.models import Market, Order, OrderType, Side, State, quantize_money
+from ballast.core.strategy import PlanResult
 
 # Halftime phase rule selector. SPEC-MAB-001 [T9]; default ``standard``,
 # extensible later without an interface break.
@@ -171,24 +172,33 @@ def mab_daily_orders(
 
 def mab_on_seed_exhausted(
     holdings: Decimal,
+    ref_price: Decimal,
     *,
     version: MABVersion = "v2.2",
     ticker: str,
     account_seq: str,
 ) -> Order:
-    """Return the seed-exhausted quarter-sell as a single LOC SELL (REQ-MAB-001-R4).
+    """Return the seed-exhausted quarter-sell as a single priced LOC SELL (R4 / R1).
 
     When the seed is exhausted (after ``n_splits`` buys) the strategy quarter-sells
     ``floor(holdings / 4)`` to re-secure the seed before the cycle repeats. The
     quantity is floored toward zero (never oversold beyond the quarter) and carries
     ``OrderType.LOC``. The v2.x quarter-stop-loss is a provisional variant [T9];
     the ``v2.2`` default is the seed-exhausted quarter-sell defined here.
+
+    SPEC-STRATEGY-001 (R1, FD1): the LOC carries a deterministic, INJECTED limit
+    price — ``quantize_money(ref_price)``, the cycle's current/close price supplied
+    via ``Market.current_price`` — never ``None``. Because the limit equals the bar
+    close, the backtest still fills it at the close (identical ledger effect), while
+    a priced ``LIMIT + CLS`` is a valid live order (Toss has no MOC, so the prior
+    price-less LOC surfaced as ``FAILED``). ``ref_price`` is injected, so the
+    function stays pure (no clock, no network, no ``float``).
     """
     return Order(
         side=Side.SELL,
         ticker=ticker,
         qty=_floor_shares(holdings / _FOUR),
-        limit_price=None,
+        limit_price=quantize_money(ref_price),
         order_type=OrderType.LOC,
         account_seq=account_seq,
     )
@@ -209,8 +219,16 @@ class MABStrategy:
     cadence: Literal["daily", "cycle"] = "daily"
     ns: str = "mab"
 
-    def plan_orders(self, market: Market, state: State, cfg: Config) -> list[Order]:
-        """Wire the MAB daily or seed-exhausted path for one snapshot."""
+    def plan_orders(self, market: Market, state: State, cfg: Config) -> PlanResult:
+        """Wire the MAB daily or seed-exhausted path for one snapshot.
+
+        Returns the day's orders plus an EMPTY state delta: MAB has no
+        strategy-evolved internal state (``avg_price``/``holdings``/
+        ``seed_remaining``/``round_idx`` are derived by the engine from fills), so
+        it conforms to the enriched contract without inventing state
+        (REQ-STRATEGY-001-R2/R4, FD5). The seed-exhausted quarter-sell is priced
+        at the injected ``market.current_price`` (REQ-STRATEGY-001-R1, FD1).
+        """
         mab = cfg.strategies.mab
 
         avg_price = state.data.get(_STATE_AVG_PRICE, _ZERO)
@@ -222,18 +240,22 @@ class MABStrategy:
         registry = InstrumentRegistry.from_config(cfg)
         target_pct = registry.resolve_target_pct(mab.ticker, mab.target_pct)
 
-        # Seed exhausted after n_splits buys -> the quarter-sell path.
+        # Seed exhausted after n_splits buys -> the quarter-sell path. The LOC is
+        # priced at the injected current/close price (FD1); MAB's delta is empty.
         if round_idx > mab.n_splits:
-            return [
-                mab_on_seed_exhausted(
-                    holdings,
-                    version=mab.version,
-                    ticker=mab.ticker,
-                    account_seq=mab.account_seq,
+            return PlanResult(
+                orders=(
+                    mab_on_seed_exhausted(
+                        holdings,
+                        market.current_price,
+                        version=mab.version,
+                        ticker=mab.ticker,
+                        account_seq=mab.account_seq,
+                    ),
                 )
-            ]
+            )
 
-        return mab_daily_orders(
+        orders = mab_daily_orders(
             avg_price,
             holdings,
             mab.seed,
@@ -248,3 +270,4 @@ class MABStrategy:
             ticker=mab.ticker,
             account_seq=mab.account_seq,
         )
+        return PlanResult(orders=tuple(orders))
