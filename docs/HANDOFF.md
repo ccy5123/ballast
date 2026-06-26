@@ -9,8 +9,8 @@
 ## 0. 30초 요약 / 재개 방법
 
 - **무엇**: 레버리지 ETF 전략 봇 (VR 밸류 리밸런싱 + MAB 무한매수법). moai-adk SPEC-First DDD로 개발.
-- **어디까지**: **P0(전략 코어 + 백테스트) ✅ + P1(토스 read-only 어댑터) ✅ + P2(Order Manager + dry-run) ✅ + P3(토스 write 어댑터, 실주문 백엔드) ✅ + 라이브 전 전략 정합성(STRATEGY-001) ✅ + State Store + Reconciliation(STATE-001) ✅**. 이제 dry-run→라이브 제출 경로와 영속 상태 기반이 모두 존재한다.
-- **다음 할 일**: **24/7 운영 경로** — (1) Runner/Config 진입점 → (2) Scheduler → (3) Notifier → (4) Streamlit 대시보드 → (5) 배포 (아래 §3). 또는 `/moai sync`로 문서화 먼저.
+- **어디까지**: **P0(전략 코어 + 백테스트) ✅ + P1(토스 read-only 어댑터) ✅ + P2(Order Manager + dry-run) ✅ + P3(토스 write 어댑터, 실주문 백엔드) ✅ + 라이브 전 전략 정합성(STRATEGY-001) ✅ + State Store + Reconciliation(STATE-001) ✅ + Runner/타입드 Config 진입점(RUNNER-001) ✅**. 이제 dry-run→라이브 제출 경로·영속 상태 기반·"한 사이클" 조립 지점이 모두 존재한다.
+- **다음 할 일**: **24/7 운영 경로** — (2) Scheduler(DST/장중 인지) → (3) Notifier → (4) Streamlit 대시보드 → (5) 배포 (아래 §3). Runner/Config 진입점(1)은 RUNNER-001로 **완료**. 또는 `/moai sync`로 문서화 먼저.
 - **재개 한 줄**: 새 세션에서 이 브랜치를 받고 → §2로 환경 복구 → §3대로 24/7 경로 진행.
 
 > ⚠️ 새 컨테이너는 ephemeral이다. `.moai/memory/`·`.venv/`는 **gitignore라 매번 사라진다(정상)**. 실제 작업물은 전부 git + PR #3에 있다. 손실 없음.
@@ -34,10 +34,11 @@
 | **P3**      | **토스 write 어댑터** (SPEC-ADAPTER-002, `BrokerOrderPort` 구현체 → 실주문 제출 백엔드)     | ✅        |
 | **P-live**  | **라이브 전 전략 정합성** (SPEC-STRATEGY-001, MAB 쿼터매도 LOC 가격 + VR `V_n` 다주기 진화) | ✅        |
 | **P-state** | **State Store + Reconciliation** (SPEC-STATE-001, 영속 상태 + 멱등 대조, 24/7 기반)         | ✅        |
-| 다음        | **24/7 경로**: Runner/Config → Scheduler → Notifier → Streamlit 대시보드 → 배포             | ⬜ ← 다음 |
+| 24/7-(1)    | Runner/Config 진입점 (SPEC-RUNNER-001, 타입드 RunnerConfig + 리스 + `run_one_cycle`)        | ✅        |
+| 다음        | **24/7 경로**: Scheduler(DST/장중 인지) → Notifier → Streamlit 대시보드 → 배포              | ⬜ ← 다음 |
 | 보류        | 데이터 fetcher (yfinance/CSV 실데이터 주입)                                                 | ⬜        |
 
-### 구현된 SPEC (10) — `.moai/specs/`
+### 구현된 SPEC (11) — `.moai/specs/`
 
 - **SPEC-CORE-001** — 공유 도메인 레이어 (순수, Decimal, IO 없음)
 - **SPEC-VR-001** — VR 밸류 리밸런싱 순수함수
@@ -49,12 +50,13 @@
 - **SPEC-ADAPTER-002 (P3)** — 토스 **write 어댑터** `TossOrderAdapter` (`src/ballast/adapters/toss/orders.py`). P2의 `BrokerOrderPort`(`place_order`/`cancel_order`)를 토스 `POST /api/v1/orders`·`/cancel` 위에 구현 — **dry-run 경로에 실제 라이브 제출 백엔드가 생김**. `OrderIntent`→토스 `OrderCreateRequest` 매핑, 응답/에러→`SubmissionResult`. 계약은 ORDER-001에서 그대로 재사용(포크 없음). mock-HTTP 검증만; 실 소크는 사용자 로컬.
 - **SPEC-STRATEGY-001 (P-live)** — 라이브 전 전략 정합성. HANDOFF §4 두 follow-up을 **모두 해결**: (1) MAB 쿼터매도 LOC에 결정적 **주입 가격**을 부여(기존 `None`/MOC → 라이브-유효 priced LOC, 백테스트 종가체결은 보존), (2) VR `V_n`이 사이클마다 충실히 진화(엔진 `_Ledger.v_n` 갱신). `Strategy.plan_orders`가 이제 `PlanResult(orders, state_delta)`를 반환(`src/ballast/core/strategy.py`).
 - **SPEC-STATE-001 (P-state)** — **State Store + Reconciliation** `src/ballast/state/`. 단일 포트(`StateStorePort`) 뒤에 in-memory + SQLite 백엔드; 순수·멱등 `reconcile`. 전략별 상태/주문 원장/config 스냅샷을 영속(쓰기 리스 + 낙관적 동시성). ADAPTER-002의 교차프로세스 취소 follow-up을 해결하고, **24/7 운영의 영속 기반**을 제공.
+- **SPEC-RUNNER-001 (24/7-(1))** — **Runner / 타입드 Config 진입점** `src/ballast/app/{__init__,config,runner}.py`. 워커의 "한 사이클 구동" 코어이자 **모든 라이브 동작의 단일 조립 지점**. 타입드 `RunnerConfig`(ticker / account_capital / 전략별 배분 / `dry_run` / kill-switch)는 STATE-001의 `ConfigSnapshotRecord` 위에 씌운 렌즈(포크 없음) — seed-once 후 State-Store-authoritative. 단일-쓰기 리스를 시작 시 1회 획득해 사이클 간 유지(리스 소유자 = `WORKER_ID` env, `host:pid` 폴백). `run_one_cycle`이 `Strategy.plan_orders`→`OrderManager`→`BrokerOrderPort`(라이브 경로엔 `TossOrderAdapter`)를 시계(`cycle_key`)·장중시간(`Market`) 주입과 함께 조립; ORDER-001의 kill-switch / `max_position_pct` / dry-run 가드를 재사용하고, 결정적 `client_order_id` + 영속 원장 + 낙관적 동시성 상태 델타로 멱등·재진입(re-entrant)을 보장. 네 가지 설계 결정 **모두 옵션 A로 확정**: 사이클당 단일 전략+계좌(업계 관행 — Freqtrade 인스턴스당 단일 전략, NautilusTrader 격리 상태 액터), State-Store-authoritative config(seed-once), `WORKER_ID`+`host:pid` 리스 소유자, acquire-once-hold 리스 수명. 테스트 `tests/unit/app/`.
 
 ### 코드/품질 현황 (마지막 검증 시점)
 
-- 소스: `src/ballast/{core,backtest,adapters,orders,state}/` · 테스트: `tests/unit/{core,backtest,adapters,orders,state}/`
-- **테스트 474 passed, 커버리지 100%**, `ruff` 0, `ruff format` clean, `mypy --strict` 0 (41 source files)
-- 마지막 커밋: `f7363cb feat(state): implement SPEC-STATE-001 State Store + Reconciliation (TDD)` (직전: `7cd113a fix(strategy) STRATEGY-001`, `f0f4baf feat(adapters) ADAPTER-002`)
+- 소스: `src/ballast/{core,backtest,adapters,orders,state,app}/` · 테스트: `tests/unit/{core,backtest,adapters,orders,state,app}/`
+- **테스트 519 passed, 커버리지 100%**, `ruff` 0, `ruff format` clean, `mypy --strict` 0 (44 source files)
+- 마지막 커밋: `4c98fa6 feat(app): implement SPEC-RUNNER-001 Runner / typed Config entry point (TDD)` (직전: `48de9a2 docs(spec): add SPEC-RUNNER-001`, `f7363cb feat(state): STATE-001`)
 - **Draft PR #3**: https://github.com/ccy5123/ballast/pull/3 (누적 트렁크. **PR #1·#2는 이제 CLOSED — #3로 대체됨**; 본문에 동일한 상태 요약 있음)
 
 ---
@@ -78,29 +80,29 @@ ruff check .
 ruff format --check .
 mypy --strict src
 python3 -m pytest --cov=src/ballast --cov-report=term-missing
-# 기대: All checks passed / Success / 474 passed, 100% (현 시점 기준)
+# 기대: All checks passed / Success / 519 passed, 100% (현 시점 기준)
 ```
 
 ---
 
-## 3. 다음 작업 — 24/7 운영 경로 (Runner → Scheduler → Notifier → 대시보드 → 배포)
+## 3. 다음 작업 — 24/7 운영 경로 (~~Runner~~ ✅ → Scheduler → Notifier → 대시보드 → 배포)
 
-**현재 위치**: 전략 코어·백테스트·토스 read/write 어댑터·dry-run-first Order Manager·State Store + Reconciliation가 모두 있다. 즉 **순수 코어와 IO 경계 부품은 다 갖췄다**. 남은 건 이 부품들을 **무인(unattended) 24/7 워커**로 엮고, 그 워커를 관측·제어할 **대시보드**를 붙이고, **배포**하는 일이다.
+**현재 위치**: 전략 코어·백테스트·토스 read/write 어댑터·dry-run-first Order Manager·State Store + Reconciliation·Runner/타입드 Config 진입점(RUNNER-001)이 모두 있다. 즉 **순수 코어·IO 경계 부품·"한 사이클" 단일 조립 지점까지 다 갖췄다**. 남은 건 이 부품들을 **무인(unattended) 24/7 워커**로 엮고(이제 Runner를 _언제_ 돌릴지가 다음 과제), 그 워커를 관측·제어할 **대시보드**를 붙이고, **배포**하는 일이다.
 
 > **핵심 아키텍처 원칙**: **워커가 항상 켜져 있는 엔진이고, Streamlit은 대시보드일 뿐이다 — 둘은 State Store를 통해 분리(decoupled)된다.** Streamlit 자체는 무인 백그라운드 실행을 보장하지 못한다(요청 단위로 깨어나는 런타임). 따라서 스케줄·주문 제출은 **반드시 별도의 always-on 워커**가 책임지고, Streamlit은 State Store를 읽고(상태/원장/체결) 쓰는(config/kill-switch) **워커의 read/write 동료(peer)** 역할만 한다.
 
 다음 순서와 근거:
 
-### (1) Runner / Config 진입점 — _가장 먼저_
+### (1) Runner / Config 진입점 — **DONE ✅ (SPEC-RUNNER-001)**
 
-- **타입드 config**: ticker + 계좌 자본(account capital) + 전략별 배분(per-strategy allocation) + `dry_run` + **kill-switch**.
-- **State Store와 연동**: config 스냅샷을 읽고/쓰며(STATE-001의 `ConfigSnapshotRecord`), **writer 리스(lease)를 획득**한 뒤(단일 쓰기 보장) 한 사이클을 구동한다(strategy core → Order Manager → 토스 어댑터).
-- _왜 먼저_: 모든 라이브 동작의 단일 조립 지점. 이게 있어야 스케줄러·대시보드가 붙을 대상이 생긴다.
+- **타입드 config ✅**: ticker + 계좌 자본(account capital) + 전략별 배분(per-strategy allocation) + `dry_run` + **kill-switch**. STATE-001 `ConfigSnapshotRecord` 위의 렌즈(포크 없음) — seed-once 후 State-Store-authoritative.
+- **State Store와 연동 ✅**: config 스냅샷을 읽고/쓰며(STATE-001의 `ConfigSnapshotRecord`), **writer 리스(lease)를 시작 시 1회 획득**해 사이클 간 유지(단일 쓰기 보장; 소유자 = `WORKER_ID` env, `host:pid` 폴백)한 뒤 `run_one_cycle`로 한 사이클을 구동한다(strategy core → Order Manager → 토스 어댑터; 시계 `cycle_key`·장중시간 `Market` 주입, 결정적 `client_order_id`로 멱등·재진입).
+- _결과_: 모든 라이브 동작의 단일 조립 지점이 생겼다 → 이제 스케줄러·대시보드가 붙을 대상이 존재한다.
 
-### (2) Scheduler
+### (2) Scheduler — _가장 먼저 / 다음_
 
 - **DST/장중 인지(market-hours-aware) 트리거**: MAB 매일 / VR 사이클 / **LOC는 종가에 맞춰 타이밍**. 미국장 + 서머타임 전환을 정확히 다뤄야 한다.
-- _왜 둘째_: Runner가 “한 사이클”을 안다면, 스케줄러는 “언제 그 사이클을 돌릴지”를 안다.
+- _왜 다음_: Runner가 이제 “한 사이클”을 알므로, 스케줄러는 “언제 그 사이클을 돌릴지”를 안다.
 
 ### (3) Notifier (ntfy / Discord)
 
@@ -146,7 +148,7 @@ python3 -m pytest --cov=src/ballast --cov-report=term-missing
 
 > **State Store + Reconciliation는 이제 DONE**(SPEC-STATE-001). 남은 백로그는 §3의 **24/7 경로**와 데이터 fetcher다.
 
-- **24/7 경로 (다음 작업, 상세는 §3)** — (1) Runner/Config 진입점 → (2) Scheduler(DST/장중 인지) → (3) Notifier(ntfy/Discord) → (4) Streamlit 대시보드 → (5) 배포(Railway always-on 워커 + 볼륨/Postgres). **워커=엔진, Streamlit=대시보드, State Store로 분리**.
+- **24/7 경로 (다음 작업, 상세는 §3)** — ✅ ~~(1) Runner/Config 진입점~~ **DONE (SPEC-RUNNER-001)** → **(2) Scheduler(DST/장중 인지) ← 다음** → (3) Notifier(ntfy/Discord) → (4) Streamlit 대시보드 → (5) 배포(Railway always-on 워커 + 볼륨/Postgres). **워커=엔진, Streamlit=대시보드, State Store로 분리**.
 - ✅ ~~**State Store**~~ — **DONE** (SPEC-STATE-001): 전략별 namespace 상태 + 주문 원장 + config 스냅샷 영속(in-memory + SQLite, 단일 포트).
 - ✅ ~~**Reconciliation**~~ — **DONE** (SPEC-STATE-001): 체결 대조 → 상태 갱신, 순수·멱등 `reconcile`.
 - **데이터 fetcher** — yfinance/CSV 어댑터로 실데이터 OHLC+FX 주입 → 실제 비교표(CAGR/MDD/세금드래그) 산출.
@@ -166,8 +168,8 @@ python3 -m pytest --cov=src/ballast --cov-report=term-missing
 ## 7. 핵심 파일/레퍼런스 위치
 
 - 프로젝트 DNA: `.moai/project/{product,structure,tech}.md` (tech.md에 Constitution)
-- SPEC: `.moai/specs/SPEC-{CORE,VR,MAB}-001/`, `SPEC-BACKTEST-{001,002}/`, `SPEC-ADAPTER-{001,002}/`, `SPEC-ORDER-001/`, `SPEC-STRATEGY-001/`, `SPEC-STATE-001/`
-- 소스: `src/ballast/core/` (순수; `strategy.py`에 `PlanResult`/`Strategy`), `src/ballast/backtest/` (pandas/numpy 허용), `src/ballast/adapters/` (IO 경계; `toss/orders.py`에 write 어댑터), `src/ballast/orders/` (Order Manager, dry-run-first), `src/ballast/state/` (State Store + Reconciliation; in-memory + SQLite, 순수 `reconcile`)
+- SPEC: `.moai/specs/SPEC-{CORE,VR,MAB}-001/`, `SPEC-BACKTEST-{001,002}/`, `SPEC-ADAPTER-{001,002}/`, `SPEC-ORDER-001/`, `SPEC-STRATEGY-001/`, `SPEC-STATE-001/`, `SPEC-RUNNER-001/`
+- 소스: `src/ballast/core/` (순수; `strategy.py`에 `PlanResult`/`Strategy`), `src/ballast/backtest/` (pandas/numpy 허용), `src/ballast/adapters/` (IO 경계; `toss/orders.py`에 write 어댑터), `src/ballast/orders/` (Order Manager, dry-run-first), `src/ballast/state/` (State Store + Reconciliation; in-memory + SQLite, 순수 `reconcile`), `src/ballast/app/` (Runner + 타입드 RunnerConfig; `run_one_cycle` 단일 조립 지점 + 리스)
 - **토스 API 진실의 원천**: `docs/reference/toss-openapi.json` (OpenAPI 3.1.0 v1.1.5)
 - 설정: `.moai/config/sections/*.yaml`, `pyproject.toml`(deps·ruff·mypy·pytest)
 
