@@ -373,3 +373,74 @@ def test_malformed_error_field_falls_back(clock: object) -> None:
     with pytest.raises(TossApiError) as exc:
         client.get("/api/v1/prices")
     assert exc.value.code == "http-400"
+
+
+# ADAPTER-002 R1 — post unwraps the result, injects Bearer + the account header,
+# and sends the JSON body verbatim (mirrors get's transport guarantees).
+def test_post_unwraps_result_injects_headers_and_body(clock: object) -> None:
+    import json
+
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"result": {"orderId": "ord-1"}})
+
+    client = _build_client(handler, token_manager=_make_token_manager(clock))
+    result = client.post("/api/v1/orders", json={"symbol": "005930"}, account_seq="12345")
+
+    assert result == {"orderId": "ord-1"}
+    assert seen[0].method == "POST"
+    assert seen[0].headers["authorization"] == "Bearer jwt-abc"
+    assert seen[0].headers["X-Tossinvest-Account"] == "12345"
+    assert json.loads(seen[0].content) == {"symbol": "005930"}
+
+
+# ADAPTER-002 R1 — post with no body / no account header is still authenticated.
+def test_post_without_body_or_account(clock: object) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json={"result": {"orderId": "ord-2"}})
+
+    client = _build_client(handler, token_manager=_make_token_manager(clock))
+    result = client.post("/api/v1/orders/ord-1/cancel")
+
+    assert result == {"orderId": "ord-2"}
+    assert seen[0].headers["authorization"] == "Bearer jwt-abc"
+    assert "x-tossinvest-account" not in {k.lower() for k in seen[0].headers}
+
+
+# ADAPTER-002 R4 — post reuses the single-401-reauth guard.
+def test_post_single_401_reauth_then_succeeds(clock: object) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if len(seen) == 1:
+            return httpx.Response(
+                401,
+                json={"error": {"requestId": "r", "code": "expired-token", "message": "x"}},
+            )
+        return httpx.Response(200, json={"result": {"orderId": "ord-3"}})
+
+    client = _build_client(handler, token_manager=_make_token_manager(clock))
+    result = client.post("/api/v1/orders", json={}, account_seq="1")
+    assert result == {"orderId": "ord-3"}
+    assert len(seen) == 2
+
+
+# ADAPTER-002 R4 — post reuses the bounded transient retry and maps timeouts.
+def test_post_transient_retry_and_timeout(clock: object) -> None:
+    seen: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        raise httpx.ReadTimeout("slow", request=request)
+
+    client = _build_client(handler, token_manager=_make_token_manager(clock))
+    with pytest.raises(TossApiError) as exc:
+        client.post("/api/v1/orders", json={})
+    assert exc.value.code == "timeout"
+    assert len(seen) == 3

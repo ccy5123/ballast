@@ -41,6 +41,7 @@ from ballast.adapters.toss.factory import (
     from_env,
 )
 from ballast.adapters.toss.marketdata import TossMarketDataAdapter
+from ballast.adapters.toss.orders import TossOrderAdapter
 
 __all__ = [
     "DEFAULT_BASE_URL",
@@ -68,6 +69,7 @@ __all__ = [
     "TossClient",
     "TossError",
     "TossMarketDataAdapter",
+    "TossOrderAdapter",
     "TossRateLimitError",
     "from_env",
     "to_decimal",

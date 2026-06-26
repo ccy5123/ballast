@@ -128,6 +128,56 @@ class TossClient:
 
             raise self._to_exception(response.status_code, error)
 
+    def post(
+        self,
+        path: str,
+        *,
+        json: Mapping[str, Any] | None = None,
+        account_seq: str | None = None,
+    ) -> Any:
+        """POST ``path`` with ``json`` and return the unwrapped ``result`` payload.
+
+        Mirrors :meth:`get` exactly: same auth-header injection, ``{ "result" }``
+        unwrap, exactly one 401 re-auth+retry, bounded retry/backoff honoring
+        ``Retry-After`` on transient failures, and typed-error mapping. Only the
+        HTTP verb and the request body differ; no new transport semantics.
+        """
+        body = dict(json) if json is not None else None
+        reauthed = False
+        attempt = 0
+
+        while True:
+            attempt += 1
+            headers = self._build_headers(account_seq)
+            try:
+                response = self._http.post(path, json=body, headers=headers)
+            except (httpx.TimeoutException, httpx.TransportError) as exc:
+                if attempt < MAX_ATTEMPTS:
+                    self._backoff(attempt, retry_after=None)
+                    continue
+                logger.error("request failed after %s attempts (path=%s)", attempt, path)
+                raise TossApiError("timeout", str(exc)) from exc
+
+            if response.status_code == 200:
+                return self._unwrap(response)
+
+            error = self._parse_error(response)
+
+            # Exactly one re-auth on a 401 for an authenticated call.
+            if self._is_auth_failure(response.status_code, error.code) and not reauthed:
+                reauthed = True
+                attempt -= 1  # the re-auth retry does not consume a transient attempt
+                self._tokens.refresh()
+                logger.debug("re-authenticated after 401 (requestId=%s)", error.request_id)
+                continue
+
+            # Bounded retry/backoff on transient failures.
+            if self._is_transient(response.status_code, error.code) and attempt < MAX_ATTEMPTS:
+                self._backoff(attempt, retry_after=error.retry_after)
+                continue
+
+            raise self._to_exception(response.status_code, error)
+
     def _build_headers(self, account_seq: str | None) -> dict[str, str]:
         """Build per-request headers: Bearer always, account header when scoped."""
         headers = {"Authorization": f"Bearer {self._tokens.get_token()}"}

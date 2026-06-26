@@ -35,6 +35,7 @@ from ballast.adapters.toss.account import TossAccountAdapter
 from ballast.adapters.toss.auth import TokenManager
 from ballast.adapters.toss.client import DEFAULT_BASE_URL, TossClient
 from ballast.adapters.toss.marketdata import TossMarketDataAdapter
+from ballast.adapters.toss.orders import TossOrderAdapter
 
 ENV_CLIENT_ID = "TOSS_CLIENT_ID"
 ENV_CLIENT_SECRET = "TOSS_CLIENT_SECRET"
@@ -52,11 +53,12 @@ class MissingCredentialsError(TossError):
 
 @dataclass(frozen=True, slots=True)
 class TossAdapters:
-    """The assembled, authenticated Toss surface (read-only adapters)."""
+    """The assembled, authenticated Toss surface (read + order-write adapters)."""
 
     client: TossClient
     account: TossAccountAdapter
     marketdata: TossMarketDataAdapter
+    orders: TossOrderAdapter
 
 
 def from_env(
@@ -91,4 +93,5 @@ def from_env(
         client=client,
         account=TossAccountAdapter(client),
         marketdata=TossMarketDataAdapter(client),
+        orders=TossOrderAdapter(client),
     )

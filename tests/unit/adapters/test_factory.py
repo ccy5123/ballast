@@ -24,6 +24,7 @@ from ballast.adapters.toss.factory import (
     from_env,
 )
 from ballast.adapters.toss.marketdata import TossMarketDataAdapter
+from ballast.adapters.toss.orders import TossOrderAdapter
 
 _FAKE_ID = "fake-client-id"
 _FAKE_SECRET = "fake-client-secret-value"
@@ -42,6 +43,8 @@ def test_from_env_builds_authenticated_adapters() -> None:
     assert isinstance(adapters.client, TossClient)
     assert isinstance(adapters.account, TossAccountAdapter)
     assert isinstance(adapters.marketdata, TossMarketDataAdapter)
+    # ADAPTER-002 R1 — the order-write adapter is wired alongside the read adapters.
+    assert isinstance(adapters.orders, TossOrderAdapter)
 
 
 def test_from_env_defaults_base_url_when_absent() -> None:
